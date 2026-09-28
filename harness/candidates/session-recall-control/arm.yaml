@@ -1,0 +1,4 @@
+name: session-recall-control
+profile: sdk
+base: standard
+patches: [session-recall-control.patch.yml]

@@ -1,0 +1,5 @@
+- insert:
+    - id: lab-session-recall
+      name: ../session-recall/session-recall.js
+      config:
+        control: true

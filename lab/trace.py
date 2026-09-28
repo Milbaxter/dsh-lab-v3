@@ -24,7 +24,7 @@ def read_sessions(home: Path) -> dict[str, list[dict]]:
     for f in sorted(home.glob("sessions/*/*/session.v*.jsonl*")):
         raw = f.read_bytes()
         if f.suffix == ".zstd":
-            raw = zstandard.ZstdDecompressor().stream_reader(raw).read()
+            raw = zstandard.ZstdDecompressor().stream_reader(raw, read_across_frames=True).read()
         events = [json.loads(line) for line in raw.decode(errors="replace").splitlines() if line.strip()]
         out[f.parent.name] = events
     return out
