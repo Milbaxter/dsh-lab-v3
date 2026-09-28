@@ -35,7 +35,7 @@ def main() -> None:
                 request_timeout_seconds=spec["session_timeout"],
                 initialize_timeout_seconds=90,
             ) as h:
-                r = h.run(prompt, session_id=f"s{i + 1}")
+                r = h.run(prompt, session_id=spec.get("session_ids", [])[i] if spec.get("session_ids") else f"s{i + 1}")
             rec.update(finish_reason=r.finish_reason, final_response=r.final_response)
         except Exception as e:  # recorded, tagged later
             rec.update(finish_reason="exception", error=f"{type(e).__name__}: {e}"[:2000],

@@ -41,6 +41,7 @@ MODE = "flash"
 DSH_BIN = os.environ.get("LAB_DSH_BIN", str(ROOT.parent / "dsh-npm" / "node_modules" / ".bin" / "dsh"))
 RETRY_INFRA = False
 MIN_CALLS = 0
+BG_HOME = True
 MIN_TIMEOUT = 0.0
 
 
@@ -136,6 +137,13 @@ def run_one(task: dict, arm: armreg.Arm, rep: int, sweep_dir: Path, sweep: str, 
     for d in (ws, home, tmp):
         d.mkdir(parents=True)
     ws = ws.resolve()
+    # Seed ~/.dsh with other projects' earlier sessions (lab/bghome.py), so the
+    # DSH session store looks like a real user's, not a single-task sandbox.
+    bg = ROOT.parent / "bghome" / "fakehome" / ".dsh"
+    if BG_HOME and bg.exists():
+        for sub in ("sessions", "storages"):
+            if (bg / sub).exists():
+                shutil.copytree(bg / sub, home / sub, dirs_exist_ok=True)
     results_dir = (ROOT / "runs" / "_results").resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
     worker_json = results_dir / f"{rid}.json"
@@ -220,9 +228,11 @@ def main() -> None:
     ap.add_argument("--model", dest="mode", default="flash", choices=sorted(MODELS))
     ap.add_argument("--min-calls", type=int, default=0, help="floor for per-session call budgets")
     ap.add_argument("--min-timeout", type=float, default=0, help="floor for per-session timeouts (s)")
+    ap.add_argument("--no-bg-home", action="store_true", help="do not seed ~/.dsh with background sessions")
     ap.add_argument("--retry-infra", action="store_true", help="re-run runs previously tagged INFRA")
     a = ap.parse_args()
-    global MODE, RETRY_INFRA, MIN_CALLS, MIN_TIMEOUT
+    global MODE, RETRY_INFRA, MIN_CALLS, MIN_TIMEOUT, BG_HOME
+    BG_HOME = not a.no_bg_home
     MODE = a.mode
     MIN_CALLS, MIN_TIMEOUT = a.min_calls, a.min_timeout
     RETRY_INFRA = a.retry_infra
