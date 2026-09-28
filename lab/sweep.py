@@ -40,6 +40,8 @@ MODELS = {"flash": {"LAB_MODEL_ID": "deepseek-v4-flash", "LAB_CONTEXT_WINDOW": "
 MODE = "flash"
 DSH_BIN = os.environ.get("LAB_DSH_BIN", str(ROOT.parent / "dsh-npm" / "node_modules" / ".bin" / "dsh"))
 RETRY_INFRA = False
+MIN_CALLS = 0
+MIN_TIMEOUT = 0.0
 
 
 def load_tasks(root: Path, splits: list[str], only: set[str] | None) -> list[dict]:
@@ -95,7 +97,8 @@ TASKS_ROOT = Path(os.environ.get("LAB_TASKS", str(ROOT.parent / "tasks"))).resol
 
 def sandboxed(cmd: list[str], rundir: Path, tmp: Path, env: dict, timeout: float) -> tuple[int, bool, str]:
     params = {"RUNDIR": rundir, "TMP": tmp, "TASKS": TASKS_ROOT, "RUNS": (ROOT / "runs").resolve(),
-              "REALHOME": Path.home(), "DOTENV": (ROOT.parent / ".env").resolve(), "REF": (ROOT.parent / "ref").resolve()}
+              "REALHOME": Path.home(), "DOTENV": (ROOT.parent / ".env").resolve(), "REF": (ROOT.parent / "ref").resolve(),
+              "RESULTS": (ROOT / "runs" / "_results").resolve()}
     full = ["sandbox-exec", "-f", str(SB)] + [x for k, v in params.items() for x in ("-D", f"{k}={v}")] + cmd
     p = subprocess.Popen(full, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
     try:
@@ -125,10 +128,18 @@ def run_one(task: dict, arm: armreg.Arm, rep: int, sweep_dir: Path, sweep: str, 
             return prev
     if rdir.exists():
         shutil.rmtree(rdir)
-    ws, home, tmp, fakehome = (rdir / x for x in ("ws", "home", "tmp", "fakehome"))
-    for d in (ws, home, tmp, fakehome):
+    # Mirror a real machine: $HOME with DSH's default home at ~/.dsh and the
+    # project under ~/projects/<task>. Runner bookkeeping (worker result) lives
+    # outside anything the agent can read.
+    fakehome, tmp = rdir / "fakehome", rdir / "tmp"
+    home, ws = fakehome / ".dsh", fakehome / "projects" / task["id"]
+    for d in (ws, home, tmp):
         d.mkdir(parents=True)
     ws = ws.resolve()
+    results_dir = (ROOT / "runs" / "_results").resolve()
+    results_dir.mkdir(parents=True, exist_ok=True)
+    worker_json = results_dir / f"{rid}.json"
+    worker_json.unlink(missing_ok=True)
     src = task["dir"] / "workspace"
     if src.exists():
         shutil.copytree(src, ws, dirs_exist_ok=True, symlinks=True)
@@ -139,8 +150,8 @@ def run_one(task: dict, arm: armreg.Arm, rep: int, sweep_dir: Path, sweep: str, 
         subprocess.run([PY, str(task["dir"] / "setup.py"), str(ws), str(rep), str(truth)], check=True, timeout=120)
 
     budget = task.get("budget", {})
-    max_calls = int(budget.get("max_calls", 30))
-    sess_timeout = float(budget.get("timeout", 480))
+    max_calls = max(int(budget.get("max_calls", 30)), MIN_CALLS)
+    sess_timeout = max(float(budget.get("timeout", 480)), MIN_TIMEOUT)
     faults_dir = ROOT / "runs" / "faults"
     faults_dir.mkdir(parents=True, exist_ok=True)
     (faults_dir / f"{rid}.json").write_text(json.dumps({"max_calls": max_calls * len(task["prompts"]), "model": MODE,
@@ -150,13 +161,14 @@ def run_one(task: dict, arm: armreg.Arm, rep: int, sweep_dir: Path, sweep: str, 
     env.update(LAB_BASE_URL=f"{PROXY}/r/{rid}/v1", LAB_API_KEY="lab-dummy", LAB_DSH_BIN=DSH_BIN, **MODELS[MODE])
     spec = {"prompts": task["prompts"], "home": str(home.resolve()), "ws": str(ws), "profile": arm.profile,
             "patches": arm.all_patches(), "session_timeout": sess_timeout,
-            "result": str((rdir / "worker.json").resolve())}
+            "result": str(worker_json)}
     t0 = time.time()
     rc, killed, log = sandboxed([PY, str(ROOT / "lab" / "worker.py"), json.dumps(spec)], rdir.resolve(),
                                 tmp.resolve(), env, sess_timeout * len(task["prompts"]) + 90)
     wall = time.time() - t0
     (rdir / "worker.log").write_text(log)
-    result = json.loads((rdir / "worker.json").read_text()) if (rdir / "worker.json").exists() else {"sessions": []}
+    result = json.loads(worker_json.read_text()) if worker_json.exists() else {"sessions": []}
+    shutil.copy(worker_json, rdir / "worker.json") if worker_json.exists() else None
 
     # Grade outside the agent's view: hidden files are copied next to (not into) the workspace.
     gdir = (rdir / "grade").resolve()
@@ -189,9 +201,8 @@ def run_one(task: dict, arm: armreg.Arm, rep: int, sweep_dir: Path, sweep: str, 
     (rdir / "calls.json").write_text(json.dumps(summary["calls"], indent=1))
     res_file.write_text(json.dumps(out, indent=1))
     if not os.environ.get("LAB_KEEP"):
-        for d in ("home", "tmp", "fakehome", "grade"):
+        for d in ("tmp", "fakehome", "grade"):
             shutil.rmtree(rdir / d, ignore_errors=True)
-        shutil.rmtree(ws, ignore_errors=True)
     return out
 
 
@@ -207,10 +218,13 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--stop-at-usd", type=float, default=52.5, help="stop scheduling when ledger total passes this")
     ap.add_argument("--model", dest="mode", default="flash", choices=sorted(MODELS))
+    ap.add_argument("--min-calls", type=int, default=0, help="floor for per-session call budgets")
+    ap.add_argument("--min-timeout", type=float, default=0, help="floor for per-session timeouts (s)")
     ap.add_argument("--retry-infra", action="store_true", help="re-run runs previously tagged INFRA")
     a = ap.parse_args()
-    global MODE, RETRY_INFRA
+    global MODE, RETRY_INFRA, MIN_CALLS, MIN_TIMEOUT
     MODE = a.mode
+    MIN_CALLS, MIN_TIMEOUT = a.min_calls, a.min_timeout
     RETRY_INFRA = a.retry_infra
 
     tasks = load_tasks(Path(a.tasks), a.split.split(","), set(a.only.split(",")) if a.only else None)

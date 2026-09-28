@@ -19,6 +19,7 @@
 (allow file-write*
   (subpath (param "RUNDIR"))
   (subpath (param "TMP"))
+  (subpath (param "RESULTS"))
   (subpath "/private/var/folders")
   (subpath "/private/tmp")
   (literal "/dev/null") (literal "/dev/tty") (literal "/dev/ptmx") (regex #"^/dev/fd/") (regex #"^/dev/ttys"))

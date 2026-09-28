@@ -1,0 +1,3 @@
+- insert:
+    - id: lab-session-recall
+      name: ./session-recall.js

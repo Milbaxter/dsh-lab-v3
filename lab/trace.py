@@ -60,6 +60,8 @@ def summarize(sessions: dict[str, list[dict]]) -> dict:
         "tools_used": dict(Counter(c["name"] for c in calls)),
         "max_identical_call_repeat": max_repeat,
         "compaction_events": compactions,
+        # Agent read DSH's own state dir (e.g. to recover earlier sessions).
+        "dsh_home_snoop": sum(1 for c in calls if ".dsh" in (c.get("args") or "")),
         "calls": calls[:200],
     }
 
